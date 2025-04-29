@@ -33,6 +33,17 @@ processed_users = set()
 last_processed_row = 1 
 actively_processing = False  
 
+# Column indexes (0-based)
+COL_TIMESTAMP = 0
+COL_EMAIL = 1
+COL_FIRST_NAME = 2
+COL_LAST_NAME = 3
+COL_COURSE = 4
+COL_PERIOD = 5
+COL_MOBILE = 6
+COL_STATUS = 7  # Status will be written to column H
+COL_PROCESSED_TIME = 8  # Processing timestamp will be written to column I
+
 def get_credentials():
     if not ENCODED_CREDS:
         raise ValueError("GOOGLE_CREDENTIALS_JSON_BASE64 environment variable is not set")
@@ -188,37 +199,54 @@ def send_certificate_email(recipient_email, name, course):
         print(f"Error sending email: {e}")
         return False
 
-
 def update_status(sheet, row_index, status):
     try:
-        sheet.update_cell(row_index, 6, status)
-        sheet.update_cell(row_index, 7, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        time.sleep(1)
+        # Update status in column H (index 7)
+        sheet.update_cell(row_index, COL_STATUS + 1, status)
+        
+        # Update timestamp in column I (index 8)
+        sheet.update_cell(row_index, COL_PROCESSED_TIME + 1, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        
+        time.sleep(1)  # Avoid API rate limiting
     except Exception as e:
         print(f"Error updating status: {e}")
+
+def generate_user_key(email, first_name, last_name):
+    """Create a unique key for each user to prevent duplicates"""
+    email = email.strip().lower()
+    first_name = first_name.strip().lower()
+    last_name = last_name.strip().lower()
+    return f"{email}:{first_name}:{last_name}"
 
 def initialize_processed_users(sheet):
     global processed_users
     try:
         all_rows = sheet.get_all_values()
         
-        for row in all_rows[1:]:
-            if len(row) >= 3:  
-                name = row[2].strip() if len(row) > 2 else ""
+        for row in all_rows[1:]:  # Skip header row
+            if len(row) > COL_LAST_NAME:  # Make sure row has enough columns
+                email = row[COL_EMAIL].strip()
+                first_name = row[COL_FIRST_NAME].strip()
+                last_name = row[COL_LAST_NAME].strip() if len(row) > COL_LAST_NAME else ""
                 
-                if name:
-                    processed_users.add(name)
+                if email and first_name:
+                    user_key = generate_user_key(email, first_name, last_name)
+                    processed_users.add(user_key)
         
         print(f"Initialized with {len(processed_users)} processed users")
     except Exception as e:
         print(f"Error initializing processed users: {e}")
 
 def is_already_processed(row):
-    if len(row) < 3:
-        return False  
-    name = row[2].strip()
+    if len(row) <= COL_LAST_NAME:
+        return False
     
-    return name in processed_users
+    email = row[COL_EMAIL].strip()
+    first_name = row[COL_FIRST_NAME].strip()
+    last_name = row[COL_LAST_NAME].strip() if len(row) > COL_LAST_NAME else ""
+    
+    user_key = generate_user_key(email, first_name, last_name)
+    return user_key in processed_users
 
 def monitor_spreadsheet():
     global last_processed_row, processed_users, actively_processing
@@ -254,33 +282,35 @@ def monitor_spreadsheet():
             
             if current_row_count > last_processed_row:
                 print(f"New submission detected: Row {current_row_count}")
-                #https://www.youtube.com/embed/LMgT02ONujQ
+                
                 row = all_rows[current_row_count-1]
                 
-                if len(row) >= 5:
-                    email = row[1].strip()
-                    first_name = row[2].strip()
-                    last_name = row[3].strip()  
-                    name =first_name +" "+last_name
-                    course = row[4].strip()          
-                    course_period = row[5].strip()
-                    mobile = row[6].strip()          
+                if len(row) > COL_MOBILE:  # Make sure row has enough columns
+                    email = row[COL_EMAIL].strip()
+                    first_name = row[COL_FIRST_NAME].strip()
+                    last_name = row[COL_LAST_NAME].strip()  
+                    full_name = f"{first_name} {last_name}"
+                    course = row[COL_COURSE].strip()          
+                    course_period = row[COL_PERIOD].strip() if len(row) > COL_PERIOD else ""
+                    mobile = row[COL_MOBILE].strip() if len(row) > COL_MOBILE else ""
                     
                     if not is_already_processed(row):
-                        print(f"Processing new submission: {name}, {email}, {course}")
+                        print(f"Processing new submission: {full_name}, {email}, {course}")
                         
                         update_status(sheet, current_row_count, "Processing")
                         
-                        if send_certificate_email(email, name, course):
+                        if send_certificate_email(email, full_name, course):
                             update_status(sheet, current_row_count, "Certificate Sent")
                             print(f"Certificate sent successfully to {email}")
                         else:
                             update_status(sheet, current_row_count, "Email Failed")
                             print(f"Failed to send certificate to {email}")
                         
-                        processed_users.add(name)
+                        # Add to processed set after successful processing
+                        user_key = generate_user_key(email, first_name, last_name)
+                        processed_users.add(user_key)
                     else:
-                        print(f"Skipping already processed: {name}")
+                        print(f"Skipping already processed: {full_name}")
                         update_status(sheet, current_row_count, "Duplicate - No Certificate Sent")
                 
                 last_processed_row = current_row_count
@@ -310,17 +340,32 @@ def status():
         sheet = client.open_by_key(SHEET_ID).sheet1
         all_rows = sheet.get_all_values()
         
+        # Check if header row exists and adjust accordingly
+        has_header = len(all_rows) > 0 and all_rows[0][0].lower() == "timestamp"
+        start_index = 1 if has_header else 0
+        
         recent_submissions = []
-        for row in all_rows[-10:]:
-            if len(row) >= 5:  
-                recent_submissions.append({
-                    'timestamp': row[0],
-                    'email': row[1],
-                    'name': row[2],
-                    'course': row[4],
-                    'status': row[5] if len(row) > 5 else 'Pending',
-                    'processed_at': row[6] if len(row) > 6 else ''
-                })
+        for row in all_rows[start_index:]:
+            if len(row) > COL_COURSE:  # Make sure row has enough columns for basic info
+                email = row[COL_EMAIL].strip() if len(row) > COL_EMAIL else ""
+                first_name = row[COL_FIRST_NAME].strip() if len(row) > COL_FIRST_NAME else ""
+                last_name = row[COL_LAST_NAME].strip() if len(row) > COL_LAST_NAME else ""
+                full_name = f"{first_name} {last_name}"
+                
+                submission = {
+                    'timestamp': row[COL_TIMESTAMP] if len(row) > COL_TIMESTAMP else "",
+                    'email': email,
+                    'name': full_name,
+                    'course': row[COL_COURSE] if len(row) > COL_COURSE else "",
+                    'period': row[COL_PERIOD] if len(row) > COL_PERIOD else "",
+                    'mobile': row[COL_MOBILE] if len(row) > COL_MOBILE else "",
+                    'status': row[COL_STATUS] if len(row) > COL_STATUS else 'Pending',
+                    'processed_at': row[COL_PROCESSED_TIME] if len(row) > COL_PROCESSED_TIME else ''
+                }
+                recent_submissions.append(submission)
+        
+        # Show the most recent 10 submissions
+        recent_submissions = recent_submissions[-10:]
         
         return render_template('status.html', submissions=recent_submissions)
     except Exception as e:
