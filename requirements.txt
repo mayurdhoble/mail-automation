@@ -1,0 +1,7 @@
+Flask==2.3.3
+gspread==5.10.0
+google-auth==2.22.0
+python-dotenv==1.0.0
+pdfkit==1.0.0
+gunicorn==21.2.0
+google-auth-oauthlib==1.0.0

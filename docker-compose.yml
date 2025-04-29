@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  certificate-app:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - PORT=5000
+      # You should use a .env file for these sensitive values
+      # Or pass them directly to the container at runtime
+      - SHEET_ID=${SHEET_ID}
+      - GOOGLE_CREDENTIALS_JSON_BASE64=${GOOGLE_CREDENTIALS_JSON_BASE64}
+      - EMAIL_ADDRESS=${EMAIL_ADDRESS}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
